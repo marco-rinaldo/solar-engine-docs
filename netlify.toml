@@ -1,0 +1,5 @@
+[[headers]]
+  for = "/openapi.yaml"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Content-Type = "application/yaml"

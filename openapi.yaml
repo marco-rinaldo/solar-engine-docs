@@ -1,0 +1,899 @@
+openapi: "3.1.0"
+
+info:
+  title: Solar Engine API
+  version: "1.1"
+  description: |
+    **L'infrastruttura B2B neutrale per il fotovoltaico italiano.**
+    Per chi vuole offrire stime senza diventare lead-gen né installatore.
+
+    Solar Engine è un layer di calcolo deterministico esposto via API REST e MCP Server.
+    Ogni stima è trasparente, auditable, con framework regolatorio italiano integrato:
+    detrazioni fiscali, Conto Termico, CER, art. 1122-bis CC, tariffe biorary/trifascial,
+    profili di consumo orari per tipologia familiare.
+
+    **Base URL:** `https://api.marcorinaldo.it/v1`
+
+    ## Autenticazione
+    Tutti gli endpoint (eccetto `/health`) richiedono una API key nell'header:
+    ```
+    Authorization: Bearer sk_live_<32 char base62>
+    ```
+
+    ## Rate limiting
+    I limiti variano per tier:
+    - FREE: 50 chiamate/giorno
+    - STARTER: 5.000 chiamate/mese
+    - PARTNER: 100.000 chiamate/mese
+    - SCALE: 500.000 chiamate/mese
+
+    ## Idempotency
+    Per le richieste POST è supportata l'idempotency key (TTL 24h):
+    ```
+    Idempotency-Key: <uuid>
+    ```
+
+  contact:
+    name: Marco Rinaldo
+    email: marco@marcorinaldo.it
+    url: https://marcorinaldo.it/solar-engine
+
+  license:
+    name: Proprietario
+    url: https://marcorinaldo.it/solar-engine
+
+servers:
+  - url: https://api.marcorinaldo.it/v1
+    description: Produzione
+
+  - url: http://localhost:3000/v1
+    description: Sviluppo locale
+
+tags:
+  - name: System
+    description: Health check e stato del sistema
+  - name: Estimate
+    description: Stima fotovoltaica residenziale
+  - name: Eligibility
+    description: Verifica idoneità installazione
+  - name: Leads
+    description: Gestione lead generati dalle stime
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      summary: Health check
+      description: Verifica che il servizio sia operativo. Non richiede autenticazione.
+      security: []
+      responses:
+        "200":
+          description: Servizio operativo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: "1.1"
+                timestamp: "2026-05-20T08:00:00.000Z"
+
+  /estimate:
+    post:
+      operationId: createEstimate
+      tags: [Estimate]
+      summary: Stima fotovoltaico residenziale
+      description: |
+        Calcola una stima fotovoltaica completa per un'abitazione italiana.
+
+        Il calcolo include:
+        - Dimensionamento impianto ottimale (kWp) in base a consumi e tetto
+        - Produzione annua da PVGIS (dati irraggiamento reali EU)
+        - Autoconsumo orario per profilo familiare
+        - Risparmio annuo in € per struttura tariffaria (flat, biorary, trifascial)
+        - ROI, payback anni, VAN 25 anni
+        - Detrazione fiscale 50% in 10 anni
+        - Scenari storage (0, 5, 10, 15 kWh)
+        - Confidence score per categoria
+        - Warning normativi strutturati
+
+        **Chiamata tipica:** 200-400ms (include chiamata PVGIS)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EstimateRequest"
+            examples:
+              casa_indipendente_milano:
+                summary: Casa indipendente a Milano, famiglia standard
+                value:
+                  address: "Via Tortona 10, Milano"
+                  household:
+                    profile: residential_dual_income_no_kids
+                    annual_consumption_kwh: 3200
+                  roof:
+                    area_sqm: 40
+                    tilt_deg: 30
+                    azimuth_deg: 180
+                  tariff:
+                    structure: biorary
+                    f1_kwh: 1100
+                    f2_kwh: 900
+                    f3_kwh: 1200
+                  storage:
+                    include_scenarios: true
+                    capex_eur_per_kwh: 600
+              smart_working_roma:
+                summary: Famiglia smart working a Roma, tetto Est-Ovest
+                value:
+                  address: "Via Appia Nuova 200, Roma"
+                  household:
+                    profile: residential_smart_working_family
+                    annual_consumption_kwh: 4500
+                  roof:
+                    area_sqm: 55
+                    orientation_split: true
+                    tilt_deg: 25
+                  tariff:
+                    structure: flat
+                    flat_kwh: 4500
+                  storage:
+                    include_scenarios: true
+      responses:
+        "200":
+          description: Stima calcolata con successo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EstimateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimitExceeded"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /eligibility/standard:
+    post:
+      operationId: checkEligibilityStandard
+      tags: [Eligibility]
+      summary: Verifica idoneità — casa indipendente
+      description: |
+        Verifica se un'abitazione indipendente è idonea all'installazione fotovoltaica.
+        Controlla vincoli paesaggistici, orientamento, superficie minima, vincoli strutturali.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EligibilityStandardRequest"
+      responses:
+        "200":
+          description: Verifica completata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligibilityResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimitExceeded"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /eligibility/condominium:
+    post:
+      operationId: checkEligibilityCondominium
+      tags: [Eligibility]
+      summary: Verifica idoneità — condominio
+      description: |
+        Verifica idoneità per installazione in condominio secondo le 4 modalità italiane:
+
+        1. **art_1122_bis** — Installazione su parti comuni con delibera assembleare (maggioranza millesimi)
+        2. **bilateral_agreement** — Accordo bilaterale tra condomini per uso esclusivo porzione tetto
+        3. **collective_self_consumption** — Autoconsumo collettivo condominiale (D.Lgs. 199/2021)
+        4. **cer** — Comunità Energetica Rinnovabile (D.Lgs. 199/2021, soglia 1 MW)
+
+        Restituisce warning normativi strutturati con riferimenti di legge per ogni modalità applicabile.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EligibilityCondominiumRequest"
+            examples:
+              condominio_milano:
+                summary: Condominio a Milano, art. 1122-bis
+                value:
+                  address: "Via Montenapoleone 5, Milano"
+                  condominium:
+                    total_units: 12
+                    requesting_units: 3
+                    roof_area_available_sqm: 80
+                    mode: art_1122_bis
+                  roof:
+                    tilt_deg: 15
+                    azimuth_deg: 170
+      responses:
+        "200":
+          description: Verifica completata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligibilityCondominiumResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimitExceeded"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /leads:
+    post:
+      operationId: createLead
+      tags: [Leads]
+      summary: Crea lead da stima
+      description: |
+        Registra un lead generato da una stima fotovoltaica. I dati del lead restano
+        nel database del partner — Solar Engine non li condivide con terzi.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeadRequest"
+      responses:
+        "201":
+          description: Lead creato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimitExceeded"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /leads/{lead_id}:
+    get:
+      operationId: getLead
+      tags: [Leads]
+      summary: Recupera lead per ID
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: lead_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Lead trovato
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: API key nel formato `sk_live_<32 char base62>`
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Chiave di idempotency (TTL 24h). Consigliata per evitare duplicati in caso di retry.
+
+  schemas:
+
+    # ─── SYSTEM ────────────────────────────────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      required: [status, version, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+          example: "1.1"
+        timestamp:
+          type: string
+          format: date-time
+
+    # ─── ESTIMATE ──────────────────────────────────────────────────────────────
+
+    EstimateRequest:
+      type: object
+      required: [address, household, roof, tariff]
+      properties:
+        address:
+          type: string
+          description: Indirizzo italiano completo (geocodificato internamente via Nominatim)
+          example: "Via Tortona 10, Milano"
+        coordinates:
+          type: object
+          description: Opzionale — sovrascrive il geocoding dell'indirizzo
+          required: [lat, lon]
+          properties:
+            lat:
+              type: number
+              format: float
+              minimum: 35.0
+              maximum: 48.0
+            lon:
+              type: number
+              format: float
+              minimum: 6.0
+              maximum: 19.0
+        household:
+          $ref: "#/components/schemas/Household"
+        roof:
+          $ref: "#/components/schemas/RoofParams"
+        tariff:
+          $ref: "#/components/schemas/TariffStructure"
+        storage:
+          $ref: "#/components/schemas/StorageParams"
+        incentives:
+          $ref: "#/components/schemas/IncentiveParams"
+
+    Household:
+      type: object
+      required: [annual_consumption_kwh]
+      properties:
+        profile:
+          type: string
+          enum:
+            - residential_single
+            - residential_couple
+            - residential_dual_income_no_kids
+            - residential_family_with_kids
+            - residential_smart_working_family
+            - residential_retired
+          default: residential_family_with_kids
+          description: Profilo di consumo orario per tipologia familiare
+        annual_consumption_kwh:
+          type: number
+          minimum: 500
+          maximum: 50000
+          description: Consumo annuo totale in kWh
+
+    RoofParams:
+      type: object
+      properties:
+        area_sqm:
+          type: number
+          minimum: 5
+          maximum: 2000
+          description: Superficie disponibile in mq
+        tilt_deg:
+          type: number
+          minimum: 0
+          maximum: 90
+          default: 30
+          description: Inclinazione in gradi
+        azimuth_deg:
+          type: number
+          minimum: 0
+          maximum: 360
+          default: 180
+          description: Orientamento (180 = Sud, 90 = Est, 270 = Ovest)
+        orientation_split:
+          type: boolean
+          default: false
+          description: Tetto spezzato Est-Ovest (modella i due versanti separatamente)
+        obstacles:
+          type: array
+          items:
+            type: string
+            enum: [heat_pump, water_heater, chimney, skylight, other]
+          description: Ostacoli esistenti sul tetto che riducono la superficie disponibile
+        heritage_constraint:
+          type: boolean
+          default: false
+          description: Edificio in zona di interesse paesaggistico o storico (genera warning normativo)
+
+    TariffStructure:
+      type: object
+      required: [structure]
+      properties:
+        structure:
+          type: string
+          enum: [flat, biorary, trifascial, pun_indexed]
+          description: |
+            - `flat`: tariffa monoraria
+            - `biorary`: due fasce (F1 picco, F23 fuori picco)
+            - `trifascial`: tre fasce GSE (F1, F2, F3)
+            - `pun_indexed`: indicizzata al PUN orario (mercato libero)
+        flat_kwh:
+          type: number
+          description: Consumo annuo flat (solo se structure = flat)
+        f1_kwh:
+          type: number
+          description: Consumo fascia F1 in kWh/anno
+        f2_kwh:
+          type: number
+          description: Consumo fascia F2 in kWh/anno
+        f3_kwh:
+          type: number
+          description: Consumo fascia F3 in kWh/anno
+        price_eur_per_kwh:
+          type: number
+          default: 0.25
+          description: Prezzo medio €/kWh (usato per calcolo risparmio se non specificato per fascia)
+
+    StorageParams:
+      type: object
+      properties:
+        include_scenarios:
+          type: boolean
+          default: false
+          description: Se true, calcola scenari con 0, 5, 10, 15 kWh di storage
+        capex_eur_per_kwh:
+          type: number
+          default: 600
+          minimum: 200
+          maximum: 1500
+          description: Costo storage €/kWh (default 600, mediana mercato IT)
+
+    IncentiveParams:
+      type: object
+      properties:
+        deduction_50pct:
+          type: boolean
+          default: true
+          description: Detrazione fiscale 50% in 10 anni (IRPEF)
+        conto_termico:
+          type: boolean
+          default: false
+          description: Conto Termico GSE (per impianti con pompa di calore)
+        cer_eligible:
+          type: boolean
+          default: false
+          description: Verifica idoneità CER (Comunità Energetica Rinnovabile)
+
+    EstimateResponse:
+      type: object
+      required: [request_id, system, production, economics, confidence, assumptions, warnings, created_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        system:
+          type: object
+          required: [size_kwp, panel_count, area_used_sqm]
+          properties:
+            size_kwp:
+              type: number
+              description: Potenza impianto ottimale in kWp
+            panel_count:
+              type: integer
+              description: Numero pannelli (assumendo pannello standard 400W)
+            area_used_sqm:
+              type: number
+              description: Superficie tetto utilizzata in mq
+        production:
+          type: object
+          required: [annual_kwh, specific_yield_kwh_per_kwp, pvgis_source]
+          properties:
+            annual_kwh:
+              type: number
+              description: Produzione annua stimata in kWh
+            specific_yield_kwh_per_kwp:
+              type: number
+              description: Resa specifica kWh/kWp/anno (benchmark qualità installazione)
+            pvgis_source:
+              type: string
+              description: Dataset PVGIS usato (es. PVGIS-SARAH3)
+            monthly_kwh:
+              type: array
+              items:
+                type: number
+              minItems: 12
+              maxItems: 12
+              description: Produzione mensile in kWh (gennaio → dicembre)
+        economics:
+          type: object
+          required: [self_consumption_pct, annual_saving_eur, capex_eur, payback_years, npv_25y_eur]
+          properties:
+            self_consumption_pct:
+              type: number
+              minimum: 0
+              maximum: 100
+              description: Percentuale autoconsumo sul totale prodotto
+            annual_saving_eur:
+              type: number
+              description: Risparmio annuo in € sulla bolletta
+            capex_eur:
+              type: number
+              description: Costo impianto stimato (€)
+            payback_years:
+              type: number
+              description: Anni di payback semplice
+            npv_25y_eur:
+              type: number
+              description: Valore Attuale Netto su 25 anni (tasso 3%)
+            deduction_annual_eur:
+              type: number
+              description: Detrazione fiscale annua (se incentives.deduction_50pct = true)
+            storage_scenarios:
+              type: array
+              description: Scenari con storage (se storage.include_scenarios = true)
+              items:
+                type: object
+                required: [storage_kwh, self_consumption_pct, annual_saving_eur, capex_eur, payback_years]
+                properties:
+                  storage_kwh:
+                    type: number
+                  self_consumption_pct:
+                    type: number
+                  annual_saving_eur:
+                    type: number
+                  capex_eur:
+                    type: number
+                  payback_years:
+                    type: number
+        confidence:
+          $ref: "#/components/schemas/ConfidenceScores"
+        assumptions:
+          type: object
+          description: Assunzioni esplicite usate nel calcolo
+          properties:
+            panel_efficiency_pct:
+              type: number
+              example: 20.5
+            degradation_annual_pct:
+              type: number
+              example: 0.5
+            electricity_price_inflation_pct:
+              type: number
+              example: 2.0
+            capex_eur_per_kwp:
+              type: number
+              example: 1400
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Warning"
+        created_at:
+          type: string
+          format: date-time
+
+    ConfidenceScores:
+      type: object
+      description: |
+        Score da 0 a 1 per ogni categoria di stima.
+        - 0.9-1.0: alta affidabilità (dati certi)
+        - 0.7-0.9: buona affidabilità (assunzioni standard)
+        - 0.5-0.7: stima indicativa (parametri mancanti)
+        - <0.5: stima approssimativa (molti parametri assunti)
+      properties:
+        production:
+          type: number
+          minimum: 0
+          maximum: 1
+        self_consumption:
+          type: number
+          minimum: 0
+          maximum: 1
+        economics:
+          type: number
+          minimum: 0
+          maximum: 1
+        overall:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    Warning:
+      type: object
+      required: [code, severity, message]
+      properties:
+        code:
+          type: string
+          description: Codice machine-readable
+          example: HERITAGE_CONSTRAINT_DETECTED
+        severity:
+          type: string
+          enum: [info, warning, blocking]
+        message:
+          type: string
+          description: Messaggio human-readable in italiano
+        legal_reference:
+          type: string
+          description: Riferimento normativo (se applicabile)
+          example: "D.Lgs. 42/2004, art. 146"
+
+    # ─── ELIGIBILITY ───────────────────────────────────────────────────────────
+
+    EligibilityStandardRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+        roof:
+          $ref: "#/components/schemas/RoofParams"
+        building:
+          type: object
+          properties:
+            year_built:
+              type: integer
+            heritage_constraint:
+              type: boolean
+              default: false
+            seismic_zone:
+              type: string
+              enum: ["1", "2", "3", "4"]
+
+    EligibilityCondominiumRequest:
+      type: object
+      required: [address, condominium]
+      properties:
+        address:
+          type: string
+        condominium:
+          type: object
+          required: [total_units, mode]
+          properties:
+            total_units:
+              type: integer
+              minimum: 2
+            requesting_units:
+              type: integer
+              minimum: 1
+            roof_area_available_sqm:
+              type: number
+            mode:
+              type: string
+              enum: [art_1122_bis, bilateral_agreement, collective_self_consumption, cer]
+              description: |
+                Modalità di installazione condominiale:
+                - `art_1122_bis`: su parti comuni con delibera assembleare
+                - `bilateral_agreement`: accordo bilaterale tra condomini
+                - `collective_self_consumption`: autoconsumo collettivo D.Lgs. 199/2021
+                - `cer`: Comunità Energetica Rinnovabile
+        roof:
+          $ref: "#/components/schemas/RoofParams"
+
+    EligibilityResponse:
+      type: object
+      required: [request_id, eligible, score, warnings, created_at]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        eligible:
+          type: boolean
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Punteggio idoneità complessivo
+        blocking_issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/Warning"
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Warning"
+        created_at:
+          type: string
+          format: date-time
+
+    EligibilityCondominiumResponse:
+      allOf:
+        - $ref: "#/components/schemas/EligibilityResponse"
+        - type: object
+          properties:
+            mode:
+              type: string
+              enum: [art_1122_bis, bilateral_agreement, collective_self_consumption, cer]
+            legal_requirements:
+              type: array
+              items:
+                type: object
+                properties:
+                  requirement:
+                    type: string
+                  legal_reference:
+                    type: string
+                  met:
+                    type: boolean
+
+    # ─── LEADS ─────────────────────────────────────────────────────────────────
+
+    LeadRequest:
+      type: object
+      required: [estimate_request_id, contact]
+      properties:
+        estimate_request_id:
+          type: string
+          format: uuid
+          description: ID della stima da cui è generato il lead
+        contact:
+          type: object
+          required: [name, email]
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: string
+        partner_metadata:
+          type: object
+          description: Metadati liberi del partner (es. source, campaign, user_id interno)
+          additionalProperties: true
+
+    LeadResponse:
+      type: object
+      required: [lead_id, estimate_request_id, contact, created_at]
+      properties:
+        lead_id:
+          type: string
+          format: uuid
+        estimate_request_id:
+          type: string
+          format: uuid
+        contact:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            phone:
+              type: string
+        partner_metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    # ─── ERRORS ────────────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              description: Codice errore machine-readable
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              description: Descrizione human-readable
+            request_id:
+              type: string
+              format: uuid
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+
+  responses:
+    BadRequest:
+      description: Input non valido
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "Campo obbligatorio mancante: household.annual_consumption_kwh"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+
+    Unauthorized:
+      description: API key mancante o non valida
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: "API key non valida o scaduta"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+
+    NotFound:
+      description: Risorsa non trovata
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    UnprocessableEntity:
+      description: Input valido ma non elaborabile (es. indirizzo non geocodificabile)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: GEOCODING_FAILED
+              message: "Impossibile geocodificare l'indirizzo fornito"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+
+    RateLimitExceeded:
+      description: Limite chiamate superato per il tier attivo
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+            description: Unix timestamp reset finestra
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalError:
+      description: Errore interno del server
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: "Errore interno. Il problema è stato segnalato automaticamente."
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
